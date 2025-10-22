@@ -6,6 +6,11 @@ A reverse-engineered recreation of the classic Injec-TOR DLL injector from the e
 
 This project is a faithful reconstruction of the original Injec-TOR v1.1+ by g3nuin3, recreated through reverse engineering to preserve a piece of gaming history from the GunZ: The Duel modding community. The original tool was widely used in the early hacking scene and represents an important part of that era's nostalgia.
 
+### Branches
+
+- **`historical`** - A read-only preservation of the original reverse-engineered code, maintained for historical accuracy
+- **`main`** - Active development branch with modern enhancements and new features
+
 ## Historical Context
 
 Injec-TOR was a popular DLL injection tool used by the GunZ: The Duel community in the game's early days. Originally released at http://www.curse-x.com, it became a staple in the GunZ hacking scene. This recreation aims to preserve the original's functionality and user interface, serving as both a tribute to the original work and a reverse engineering educational project.
