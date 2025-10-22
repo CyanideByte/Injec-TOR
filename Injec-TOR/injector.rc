@@ -1,0 +1,106 @@
+// Microsoft Visual C++ generated resource script.
+//
+#include "resource.h"
+
+#define APSTUDIO_READONLY_SYMBOLS
+/////////////////////////////////////////////////////////////////////////////
+//
+// Generated from the TEXTINCLUDE 2 resource.
+//
+#include "windows.h"
+
+/////////////////////////////////////////////////////////////////////////////
+#undef APSTUDIO_READONLY_SYMBOLS
+
+/////////////////////////////////////////////////////////////////////////////
+// English (United States) resources
+
+#if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_ENU)
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+#pragma code_page(1252)
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Dialog
+//
+
+IDD_MAIN_DIALOG DIALOGEX 0, 0, 254, 297
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_GROUP
+CAPTION "InjecTOR v.1.1"
+FONT 8, "Verdana", 0, 0, 0x1
+BEGIN
+    PUSHBUTTON      "Ok...",IDC_OK,8,279,26,11,BS_VCENTER | WS_GROUP
+    PUSHBUTTON      "Load Dll",IDC_LOAD_DLL,14,146,33,14,BS_VCENTER | WS_GROUP,WS_EX_DLGMODALFRAME
+    LISTBOX         IDC_PROCESS_LIST,137,155,92,99,LBS_NOTIFY | LBS_SORT | LBS_NOINTEGRALHEIGHT | WS_BORDER | WS_HSCROLL | WS_VSCROLL | WS_TABSTOP
+    EDITTEXT        IDC_DLL_PATH,14,167,103,13,ES_AUTOHSCROLL | WS_BORDER | WS_DISABLED | NOT WS_TABSTOP
+    PUSHBUTTON      "About",IDC_ABOUT,184,279,29,11,BS_VCENTER | WS_GROUP
+    PUSHBUTTON      "Refresh",IDC_REFRESH,137,138,35,13,BS_VCENTER | WS_GROUP,WS_EX_STATICEDGE
+    PUSHBUTTON      "Inject Dll",IDC_INJECT,50,147,34,12,BS_VCENTER | WS_GROUP
+    CONTROL         IDB_BANNER,IDC_STATIC,"Static",SS_BITMAP,8,7,237,105
+    CONTROL         "",IDC_STATUS_TEXT,"Static",SS_LEFTNOWORDWRAP | WS_GROUP,133,257,109,8
+    PUSHBUTTON      "Use",IDC_USE,215,279,32,11,NOT WS_TABSTOP
+    PUSHBUTTON      "Eject Dll",IDC_EJECT,83,137,40,12,BS_VCENTER | WS_DISABLED | WS_GROUP | NOT WS_VISIBLE
+    LTEXT           "",IDC_STATUS_TEXT2,65,273,104,17
+    CTEXT           "http://www.curse-x.com",IDC_STATIC,8,114,80,8,WS_DISABLED
+    EDITTEXT        IDC_PROCESS_NAME,15,239,99,13,WS_BORDER
+    GROUPBOX        "Watch For Process",IDC_WATCH_GROUP,8,202,121,71
+    AUTOCHECKBOX    "Use Watch",IDC_USE_WATCH,14,214,55,13,BS_VCENTER | WS_GROUP
+    LTEXT           "Name of Process (include suffix)",IDC_STATIC,14,227,110,8
+    GROUPBOX        "Load Dll",IDC_LOAD_GROUP,8,129,121,67
+    GROUPBOX        "Processes",IDC_PROCESS_GROUP,131,126,115,146
+    PUSHBUTTON      "Window",IDC_WINDOW_BUTTON,178,138,34,13,BS_VCENTER | WS_GROUP,WS_EX_STATICEDGE
+END
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Bitmap
+//
+
+IDB_BANNER              BITMAP                  "banner.bmp"
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Icon
+//
+
+// Icon with lowest ID value placed first to ensure application icon
+// remains consistent on all systems.
+IDI_ICON1               ICON                    "icon_fixed.ico"
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Cursor
+//
+
+// IDC_CURSOR1             CURSOR                  "cursor.cur"
+// Note: Cursor resource is malformed, needs proper extraction
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// DESIGNINFO
+//
+
+#ifdef APSTUDIO_INVOKED
+GUIDELINES DESIGNINFO
+BEGIN
+    IDD_MAIN_DIALOG, DIALOG
+    BEGIN
+        LEFTMARGIN, 7
+        RIGHTMARGIN, 247
+        TOPMARGIN, 7
+        BOTTOMMARGIN, 290
+    END
+END
+#endif    // APSTUDIO_INVOKED
+
+#endif    // English (United States) resources
+/////////////////////////////////////////////////////////////////////////////
+
+#ifndef APSTUDIO_INVOKED
+/////////////////////////////////////////////////////////////////////////////
+//
+// Generated from the TEXTINCLUDE 3 resource.
+//
+
+/////////////////////////////////////////////////////////////////////////////
+#endif    // not APSTUDIO_INVOKED
