@@ -18,13 +18,15 @@
 
 #pragma comment(lib, "comctl32.lib")
 
+// Constants
+#define MAX_LISTBOX_TEXT_LEN 32767
+
 // Global variables
 HINSTANCE g_hInstance = NULL;
 char g_szDllPath[MAX_PATH] = { 0 };                              // Full DLL path
 char g_szDllFilename[1024] = "GunzFuckV4.dll";                 // DLL filename buffer with default value (1024 bytes)
-DWORD g_dwListBoxHandle = 0;
-BOOL g_bWatcherActive = FALSE;
-BOOL g_bWatcherStop = FALSE;
+volatile BOOL g_bWatcherActive = FALSE;
+volatile BOOL g_bWatcherStop = FALSE;
 BOOL g_bWindowMode = FALSE;
 DWORD g_dwSelectedIndex = 0;
 
@@ -33,11 +35,14 @@ const char* g_szProcesses = "Processes";
 const char* g_szWindows = "Windows";
 const char* g_szWindow = "Window";
 const char* g_szProcess = "Process";
+const char* g_szInjectionFailed = "Injection Failed..Falling Back..";
+
+// MessageBox title
+const char* g_szMsgBoxTitle = "InjecTOR";
 
 // Function prototypes
 INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
 BOOL InjectDLL(HWND hDlg, DWORD dwProcessId, SIZE_T dllPathLen);
-BOOL WriteMemoryWrapper(HANDLE hProcess, LPVOID lpAddress, LPCVOID lpBuffer, SIZE_T nSize);
 void EnumerateProcesses(HWND hDlg);
 BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam);
 void ExtractFilenameFromPath(const char* fullPath, char* filename);
@@ -103,8 +108,8 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
 
         case IDC_REFRESH:
         {
-            g_dwListBoxHandle = (DWORD)GetDlgItem(hDlg, IDC_PROCESS_LIST);
-            SendMessage((HWND)g_dwListBoxHandle, LB_RESETCONTENT, 0, 0);
+            HWND hListBox = GetDlgItem(hDlg, IDC_PROCESS_LIST);
+            SendMessage(hListBox, LB_RESETCONTENT, 0, 0);
 
             if (g_bWindowMode)
                 EnumWindows(EnumWindowsProc, (LPARAM)hDlg);
@@ -116,6 +121,13 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
 
         case IDC_INJECT:
         {
+            // Check if a DLL has been selected first
+            if (strlen(g_szDllPath) == 0)
+            {
+                MessageBoxA(hDlg, "Could not inject DLL, did you pick one!?.", g_szMsgBoxTitle, MB_OK);
+                return TRUE;
+            }
+
             DWORD dwPID = 0;
 
             if (g_bWindowMode)
@@ -127,30 +139,33 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
                 g_dwSelectedIndex = selIndex;
 
                 LRESULT textLen = SendMessage(hListBox, LB_GETTEXTLEN, selIndex, 0);
-                char* szWindowTitle = new char[textLen + 1];
+                if (textLen <= 0 || textLen >= MAX_LISTBOX_TEXT_LEN)
+                {
+                    MessageBoxA(hDlg, "Invalid window selection", g_szMsgBoxTitle, MB_OK);
+                    return TRUE;
+                }
 
+                char* szWindowTitle = new char[textLen + 1];
                 SendMessage(hListBox, LB_GETTEXT, g_dwSelectedIndex, (LPARAM)szWindowTitle);
 
                 HWND hTargetWnd = FindWindowA(NULL, szWindowTitle);
+                delete[] szWindowTitle;
 
                 if (!hTargetWnd)
                 {
-                    MessageBoxA(hDlg, "Window cannot be found", "Error", MB_OK);
-                    delete[] szWindowTitle;
+                    MessageBoxA(hDlg, "Window cannot be found or is no longer open", g_szMsgBoxTitle, MB_OK);
                     return TRUE;
                 }
 
                 GetWindowThreadProcessId(hTargetWnd, &dwPID);
-                delete[] szWindowTitle;
 
                 if (dwPID)
                 {
                     char szStatus[512];
-                    sprintf(szStatus, "PID: %i is chosen", dwPID);
+                    _snprintf(szStatus, sizeof(szStatus) - 1, "PID: %i is chosen", dwPID);
+                    szStatus[sizeof(szStatus) - 1] = '\0';
                     SetDlgItemTextA(hDlg, IDC_STATUS_TEXT, szStatus);
                 }
-
-                InjectDLL(hDlg, dwPID, strlen(g_szDllPath) + 1);
             }
             else
             {
@@ -169,15 +184,22 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
                     if (dwPID)
                     {
                         char szStatus[512];
-                        sprintf(szStatus, "PID: %i is chosen", dwPID);
+                        _snprintf(szStatus, sizeof(szStatus) - 1, "PID: %i is chosen", dwPID);
+                        szStatus[sizeof(szStatus) - 1] = '\0';
                         SetDlgItemTextA(hDlg, IDC_STATUS_TEXT, szStatus);
                     }
 
                     CloseHandle(hSnapshot);
                 }
+            }
 
+            // Only inject if we successfully got a PID
+            if (dwPID != 0)
+            {
                 InjectDLL(hDlg, dwPID, strlen(g_szDllPath) + 1);
             }
+            // Note: If dwPID is 0, error messages have already been shown by
+            // GetSelectedProcessPID (for no selection) or earlier window mode checks
 
             return TRUE;
         }
@@ -190,7 +212,7 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
                 " 3.) Press inject dll.\n\n"
                 "Read the Read me for use of Process watcher plox";
 
-            MessageBoxA(hDlg, szUsage, "How to use InjecTOR", MB_OK | MB_ICONINFORMATION);
+            MessageBoxA(hDlg, szUsage, g_szMsgBoxTitle, MB_OK);
             return TRUE;
         }
 
@@ -207,17 +229,16 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
             else
             {
                 g_bWatcherActive = TRUE;
-                HANDLE hThread = CreateThread(NULL, 0, ProcessWatcherThread, hDlg, 0, NULL);
-                Sleep(100);
-                CloseHandle(hThread);
+                CreateThread(NULL, 0, ProcessWatcherThread, hDlg, 0, NULL);
+                // Thread handle is intentionally not closed - thread manages its own lifetime
             }
             return TRUE;
         }
 
         case IDC_WINDOW_BUTTON:
         {
-            g_dwListBoxHandle = (DWORD)GetDlgItem(hDlg, IDC_PROCESS_LIST);
-            SendMessage((HWND)g_dwListBoxHandle, LB_RESETCONTENT, 0, 0);
+            HWND hListBox = GetDlgItem(hDlg, IDC_PROCESS_LIST);
+            SendMessage(hListBox, LB_RESETCONTENT, 0, 0);
 
             if (g_bWindowMode)
             {
@@ -259,26 +280,25 @@ DWORD WINAPI ProcessWatcherThread(LPVOID lpParameter)
 
     GetDlgItemTextA(hDlg, IDC_PROCESS_NAME, szProcessName, MAX_PATH);
 
-    if (strcmp(g_szDllPath, "") == 0)
+    if (g_szDllPath[0] == '\0')
     {
-        MessageBoxA(hDlg, "Choose Dll", "injector", MB_OK);
+        MessageBoxA(hDlg, "Choose Dll", g_szMsgBoxTitle, MB_OK);
         g_bWatcherActive = FALSE;
         g_bWatcherStop = FALSE;
         CheckDlgButton(hDlg, IDC_USE_WATCH, BST_UNCHECKED);
-        return -1;
+        return 1;
     }
 
     HWND hProcessNameEdit = GetDlgItem(hDlg, IDC_PROCESS_NAME);
     if (!GetWindowTextLengthA(hProcessNameEdit))
     {
-        MessageBoxA(hDlg, "You need to put in a name, must be valid also, with the extension", "Error", MB_OK);
+        MessageBoxA(hDlg, "You need to put in a name, must be valid also, with the extension", g_szMsgBoxTitle, MB_OK);
         g_bWatcherActive = FALSE;
         g_bWatcherStop = FALSE;
         CheckDlgButton(hDlg, IDC_USE_WATCH, BST_UNCHECKED);
-        return -1;
+        return 1;
     }
 
-    memset(&pe32, 0, sizeof(pe32));
     pe32.dwSize = sizeof(PROCESSENTRY32);
 
     if (!g_bWatcherStop)
@@ -289,14 +309,13 @@ DWORD WINAPI ProcessWatcherThread(LPVOID lpParameter)
 
             if (hSnapshot == INVALID_HANDLE_VALUE)
             {
-                CloseHandle(INVALID_HANDLE_VALUE);
                 g_bWatcherActive = FALSE;
                 g_bWatcherStop = FALSE;
                 CheckDlgButton(hDlg, IDC_USE_WATCH, BST_UNCHECKED);
-                return -1;
+                return 1;
             }
 
-            if (Process32First(hSnapshot, &pe32) && Process32Next(hSnapshot, &pe32))
+            if (Process32First(hSnapshot, &pe32))
             {
                 do
                 {
@@ -311,7 +330,7 @@ DWORD WINAPI ProcessWatcherThread(LPVOID lpParameter)
                             g_bWatcherActive = FALSE;
                             g_bWatcherStop = FALSE;
                             CheckDlgButton(hDlg, IDC_USE_WATCH, BST_UNCHECKED);
-                            return -1;
+                            return 1;
                         }
 
                         Sleep(100);
@@ -344,18 +363,16 @@ BOOL InjectDLL(HWND hDlg, DWORD dwProcessId, SIZE_T dllPathLen)
     HANDLE hThread = NULL;
     BOOL bSuccess = FALSE;
 
-    // Check if a DLL has been selected
-    if (strlen(g_szDllPath) == 0)
-    {
-        MessageBoxA(hDlg, "Could not inject DLL, did you pick one!?.", "injecTOR", MB_OK);
-        return FALSE;
-    }
-
     // Open the target process
     hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, dwProcessId);
     if (!hProcess)
     {
-        MessageBoxA(hDlg, "Injection Failed..Falling Back..", "InjecTOR", MB_OK);
+        char szError[256];
+        _snprintf(szError, sizeof(szError) - 1,
+            "Failed to open process (PID: %i).\nThe process may have exited or requires elevated privileges.",
+            dwProcessId);
+        szError[sizeof(szError) - 1] = '\0';
+        MessageBoxA(hDlg, szError, g_szMsgBoxTitle, MB_OK);
         return FALSE;
     }
 
@@ -365,15 +382,15 @@ BOOL InjectDLL(HWND hDlg, DWORD dwProcessId, SIZE_T dllPathLen)
     lpRemoteMem = VirtualAllocEx(hProcess, NULL, dllPathLen, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!lpRemoteMem)
     {
-        MessageBoxA(hDlg, "Injection Failed..Falling Back..", "InjecTOR", MB_OK);
+        MessageBoxA(hDlg, g_szInjectionFailed, g_szMsgBoxTitle, MB_OK);
         CloseHandle(hProcess);
         return FALSE;
     }
 
     // Write the DLL path to the allocated memory
-    if (!WriteMemoryWrapper(hProcess, lpRemoteMem, g_szDllPath, dllPathLen))
+    if (!WriteProcessMemory(hProcess, lpRemoteMem, g_szDllPath, dllPathLen, NULL))
     {
-        MessageBoxA(hDlg, "Injection Failed..Falling Back..", "injecTOR", MB_OK);
+        MessageBoxA(hDlg, g_szInjectionFailed, g_szMsgBoxTitle, MB_OK);
         VirtualFreeEx(hProcess, lpRemoteMem, 0, MEM_RELEASE);
         CloseHandle(hProcess);
         return FALSE;
@@ -400,34 +417,9 @@ BOOL InjectDLL(HWND hDlg, DWORD dwProcessId, SIZE_T dllPathLen)
     }
     else
     {
-        MessageBoxA(hDlg, "Injection Failed..Falling Back..", "InjecTOR", MB_OK);
+        MessageBoxA(hDlg, g_szInjectionFailed, g_szMsgBoxTitle, MB_OK);
         VirtualFreeEx(hProcess, lpRemoteMem, 0, MEM_RELEASE);
         CloseHandle(hProcess);
-    }
-
-    return bSuccess;
-}
-
-// Wrapper for WriteProcessMemory with VirtualProtect
-BOOL WriteMemoryWrapper(HANDLE hProcess, LPVOID lpAddress, LPCVOID lpBuffer, SIZE_T nSize)
-{
-    DWORD dwOldProtect = 0;
-    BOOL bSuccess = FALSE;
-
-    if (hProcess == NULL)
-    {
-        // Local process - use VirtualProtect
-        VirtualProtect(lpAddress, nSize, PAGE_EXECUTE_READWRITE, &dwOldProtect);
-        memcpy(lpAddress, lpBuffer, nSize);
-        VirtualProtect(lpAddress, nSize, dwOldProtect, &dwOldProtect);
-        bSuccess = TRUE;
-    }
-    else
-    {
-        // Remote process - use VirtualProtectEx and WriteProcessMemory
-        VirtualProtectEx(hProcess, lpAddress, nSize, PAGE_EXECUTE_READWRITE, &dwOldProtect);
-        bSuccess = WriteProcessMemory(hProcess, lpAddress, lpBuffer, nSize, NULL);
-        VirtualProtectEx(hProcess, lpAddress, nSize, dwOldProtect, &dwOldProtect);
     }
 
     return bSuccess;
@@ -440,8 +432,7 @@ void EnumerateProcesses(HWND hDlg)
 
     if (hSnapshot == INVALID_HANDLE_VALUE)
     {
-        MessageBoxA(hDlg, "Could not take Snapshot", "Error", MB_ICONERROR);
-        CloseHandle(hSnapshot);
+        MessageBoxA(hDlg, "Could not take Snapshot", g_szMsgBoxTitle, MB_OK);
         return;
     }
 
@@ -472,17 +463,18 @@ BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
         return TRUE;
 
     int textLen = GetWindowTextLengthA(hParent);
-    char* szWindowTitle = new char[textLen + 1];
+    if (textLen <= 0)
+        return TRUE;
 
-    int actualLen = GetWindowTextLengthA(hParent);
-    GetWindowTextA(hParent, szWindowTitle, actualLen + 1);
+    char* szWindowTitle = new char[textLen + 1];
+    GetWindowTextA(hParent, szWindowTitle, textLen + 1);
 
     HWND hListBox = GetDlgItem(hDlg, IDC_PROCESS_LIST);
 
     // Check if string already exists in listbox
     LRESULT findResult = SendMessageA(hListBox, LB_FINDSTRINGEXACT, (WPARAM)-1, (LPARAM)szWindowTitle);
 
-    if (findResult == LB_ERR && strcmp(szWindowTitle, "") != 0)
+    if (findResult == LB_ERR && szWindowTitle[0] != '\0')
     {
         if (IsWindowVisible(hParent))
         {
@@ -502,26 +494,34 @@ void ExtractFilenameFromPath(const char* fullPath, char* filename)
     int filenameIndex = 0;
     size_t pathLen = strlen(fullPath);
 
+    // Clear filename buffer once at start
+    memset(g_szDllFilename, 0, sizeof(g_szDllFilename));
+
     // Process each character in the path
     for (size_t i = 0; i < pathLen; i++)
     {
         if (fullPath[i] == '\\')
         {
-            // Reset filename buffer when we encounter a backslash
+            // Reset filename index when we encounter a backslash
             filenameIndex = 0;
-            memset(g_szDllFilename, 0, sizeof(g_szDllFilename));
         }
         else
         {
-            // Copy character to global filename buffer
-            g_szDllFilename[filenameIndex] = fullPath[i];
-            filenameIndex++;
+            // Copy character to global filename buffer with bounds check
+            if (filenameIndex < (int)sizeof(g_szDllFilename) - 1)
+            {
+                g_szDllFilename[filenameIndex] = fullPath[i];
+                filenameIndex++;
+            }
         }
     }
 
     // Copy the extracted filename to the output parameter if provided
     if (filename != NULL)
-        strcpy(filename, g_szDllFilename);
+    {
+        strncpy(filename, g_szDllFilename, 1023);
+        filename[1023] = '\0';  // Ensure null termination
+    }
 }
 
 // Get PID of selected process from listbox
@@ -534,7 +534,7 @@ DWORD GetSelectedProcessPID(HWND hDlg, HWND hListBox, PROCESSENTRY32* pe32, HAND
 
     if (iSel == LB_ERR)
     {
-        MessageBoxA(hDlg, "You need to pick a process....", "Error", MB_OK);
+        MessageBoxA(hDlg, "You need to pick a process....", g_szMsgBoxTitle, MB_OK);
         return 0;
     }
 
@@ -542,7 +542,7 @@ DWORD GetSelectedProcessPID(HWND hDlg, HWND hListBox, PROCESSENTRY32* pe32, HAND
 
     if (strlen(szSelected) == 0)
     {
-        MessageBoxA(hDlg, "Error getting text from ListBox", "Error", MB_OK);
+        MessageBoxA(hDlg, "Error getting text from ListBox", g_szMsgBoxTitle, MB_OK);
         return 0;
     }
 
@@ -558,6 +558,8 @@ DWORD GetSelectedProcessPID(HWND hDlg, HWND hListBox, PROCESSENTRY32* pe32, HAND
         } while (Process32Next(hSnapshot, pe32));
     }
 
+    // Process was selected but not found in snapshot - it may have exited
+    MessageBoxA(hDlg, "The selected process is no longer running.", g_szMsgBoxTitle, MB_OK);
     return 0;
 }
 
@@ -578,9 +580,10 @@ void ShowAboutDialog(HWND hDlg)
         "Read the Read me for use of Process watcher plox";
 
     char szFullAbout[1024] = { 0 };
-    sprintf(szFullAbout, "%s\n\n%s", szAbout, szHelp);
+    _snprintf(szFullAbout, sizeof(szFullAbout) - 1, "%s\n\n%s", szAbout, szHelp);
+    szFullAbout[sizeof(szFullAbout) - 1] = '\0';
 
-    MessageBoxA(hDlg, szFullAbout, "Yo yo", MB_OK | MB_ICONINFORMATION);
+    MessageBoxA(hDlg, szFullAbout, g_szMsgBoxTitle, MB_OK);
 }
 
 // Browse for DLL file
@@ -626,7 +629,8 @@ void SetStatusText(HWND hDlg, const char* format, ...)
     va_list args;
 
     va_start(args, format);
-    vsprintf(szBuffer, format, args);
+    _vsnprintf(szBuffer, sizeof(szBuffer) - 1, format, args);
+    szBuffer[sizeof(szBuffer) - 1] = '\0';
     va_end(args);
 
     SetDlgItemTextA(hDlg, IDC_STATUS_TEXT2, szBuffer);
