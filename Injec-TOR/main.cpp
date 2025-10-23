@@ -20,6 +20,7 @@
 
 // Constants
 #define MAX_LISTBOX_TEXT_LEN 32767
+#define INI_FILENAME "InjecTOR.ini"
 
 // Global variables
 HINSTANCE g_hInstance = NULL;
@@ -42,7 +43,7 @@ const char* g_szMsgBoxTitle = "InjecTOR";
 
 // Function prototypes
 INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
-BOOL InjectDLL(HWND hDlg, DWORD dwProcessId, SIZE_T dllPathLen);
+BOOL InjectDLL(HWND hDlg, DWORD dwProcessId, SIZE_T dllPathLen, const char* processName);
 void EnumerateProcesses(HWND hDlg);
 BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam);
 void ExtractFilenameFromPath(const char* fullPath, char* filename);
@@ -51,6 +52,11 @@ void ShowAboutDialog(HWND hDlg);
 void BrowseForDLL(HWND hDlg);
 void SetStatusText(HWND hDlg, const char* format, ...);
 DWORD WINAPI ProcessWatcherThread(LPVOID lpParameter);
+void SaveLastInjection(const char* dllPath, const char* processName);
+void LoadLastInjection(HWND hDlg);
+void StartProcessWatcher(HWND hDlg);
+void StopProcessWatcher(HWND hDlg);
+DWORD FindProcessByName(const char* processName);
 
 // WinMain entry point
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
@@ -86,6 +92,84 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
     case WM_COMMAND:
     {
         WORD wmId = LOWORD(wParam);
+        WORD wmEvent = HIWORD(wParam);
+
+        // Handle listbox selection changes
+        if (wmId == IDC_PROCESS_LIST && wmEvent == LBN_SELCHANGE)
+        {
+            HWND hListBox = GetDlgItem(hDlg, IDC_PROCESS_LIST);
+            LRESULT selIndex = SendMessage(hListBox, LB_GETCURSEL, 0, 0);
+
+            if (selIndex != LB_ERR)
+            {
+                LRESULT textLen = SendMessage(hListBox, LB_GETTEXTLEN, selIndex, 0);
+                if (textLen > 0 && textLen < MAX_PATH)
+                {
+                    char szSelectedText[MAX_PATH] = { 0 };
+                    SendMessage(hListBox, LB_GETTEXT, selIndex, (LPARAM)szSelectedText);
+
+                    // If in window mode, get the actual executable name
+                    if (g_bWindowMode)
+                    {
+                        // Find the window by title
+                        HWND hTargetWnd = FindWindowA(NULL, szSelectedText);
+                        if (hTargetWnd)
+                        {
+                            DWORD dwPID = 0;
+                            GetWindowThreadProcessId(hTargetWnd, &dwPID);
+
+                            if (dwPID != 0)
+                            {
+                                // Get the process name from PID
+                                HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+                                if (hSnapshot != INVALID_HANDLE_VALUE)
+                                {
+                                    PROCESSENTRY32 pe32 = { 0 };
+                                    pe32.dwSize = sizeof(PROCESSENTRY32);
+
+                                    if (Process32First(hSnapshot, &pe32))
+                                    {
+                                        do
+                                        {
+                                            if (pe32.th32ProcessID == dwPID)
+                                            {
+                                                // Found the process, use its exe name
+                                                SetDlgItemTextA(hDlg, IDC_PROCESS_NAME, pe32.szExeFile);
+
+                                                // Update status with PID
+                                                char szStatus[512];
+                                                _snprintf(szStatus, sizeof(szStatus) - 1, "Selected PID: %i", dwPID);
+                                                szStatus[sizeof(szStatus) - 1] = '\0';
+                                                SetDlgItemTextA(hDlg, IDC_STATUS_TEXT, szStatus);
+                                                break;
+                                            }
+                                        } while (Process32Next(hSnapshot, &pe32));
+                                    }
+
+                                    CloseHandle(hSnapshot);
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // In process mode, just use the selected text directly
+                        SetDlgItemTextA(hDlg, IDC_PROCESS_NAME, szSelectedText);
+
+                        // Find the PID and update status
+                        DWORD dwPID = FindProcessByName(szSelectedText);
+                        if (dwPID != 0)
+                        {
+                            char szStatus[512];
+                            _snprintf(szStatus, sizeof(szStatus) - 1, "Selected PID: %i", dwPID);
+                            szStatus[sizeof(szStatus) - 1] = '\0';
+                            SetDlgItemTextA(hDlg, IDC_STATUS_TEXT, szStatus);
+                        }
+                    }
+                }
+            }
+            return TRUE;
+        }
 
         switch (wmId)
         {
@@ -129,74 +213,119 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
             }
 
             DWORD dwPID = 0;
+            char szProcessName[MAX_PATH] = { 0 };
 
-            if (g_bWindowMode)
+            // First, try to get process name from the watch field
+            GetDlgItemTextA(hDlg, IDC_PROCESS_NAME, szProcessName, MAX_PATH);
+
+            // If process name is provided, try to find it first
+            if (szProcessName[0] != '\0')
             {
-                // Window mode - get window title and find window
-                HWND hListBox = GetDlgItem(hDlg, IDC_PROCESS_LIST);
-
-                LRESULT selIndex = SendMessage(hListBox, LB_GETCURSEL, 0, 0);
-                g_dwSelectedIndex = selIndex;
-
-                LRESULT textLen = SendMessage(hListBox, LB_GETTEXTLEN, selIndex, 0);
-                if (textLen <= 0 || textLen >= MAX_LISTBOX_TEXT_LEN)
-                {
-                    MessageBoxA(hDlg, "Invalid window selection", g_szMsgBoxTitle, MB_OK);
-                    return TRUE;
-                }
-
-                char* szWindowTitle = new char[textLen + 1];
-                SendMessage(hListBox, LB_GETTEXT, g_dwSelectedIndex, (LPARAM)szWindowTitle);
-
-                HWND hTargetWnd = FindWindowA(NULL, szWindowTitle);
-                delete[] szWindowTitle;
-
-                if (!hTargetWnd)
-                {
-                    MessageBoxA(hDlg, "Window cannot be found or is no longer open", g_szMsgBoxTitle, MB_OK);
-                    return TRUE;
-                }
-
-                GetWindowThreadProcessId(hTargetWnd, &dwPID);
-
-                if (dwPID)
+                dwPID = FindProcessByName(szProcessName);
+                if (dwPID != 0)
                 {
                     char szStatus[512];
-                    _snprintf(szStatus, sizeof(szStatus) - 1, "PID: %i is chosen", dwPID);
+                    _snprintf(szStatus, sizeof(szStatus) - 1, "PID: %i is chosen (by name: %s)", dwPID, szProcessName);
                     szStatus[sizeof(szStatus) - 1] = '\0';
                     SetDlgItemTextA(hDlg, IDC_STATUS_TEXT, szStatus);
                 }
             }
-            else
-            {
-                // Process mode
-                HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
 
-                if (hSnapshot != INVALID_HANDLE_VALUE)
+            // If no PID yet, fall back to listbox selection
+            if (dwPID == 0)
+            {
+                if (g_bWindowMode)
                 {
+                    // Window mode - get window title and find window
                     HWND hListBox = GetDlgItem(hDlg, IDC_PROCESS_LIST);
 
-                    PROCESSENTRY32 pe32 = { 0 };
-                    pe32.dwSize = sizeof(PROCESSENTRY32);
+                    LRESULT selIndex = SendMessage(hListBox, LB_GETCURSEL, 0, 0);
+                    g_dwSelectedIndex = selIndex;
 
-                    dwPID = GetSelectedProcessPID(hDlg, hListBox, &pe32, hSnapshot);
+                    LRESULT textLen = SendMessage(hListBox, LB_GETTEXTLEN, selIndex, 0);
+                    if (textLen <= 0 || textLen >= MAX_LISTBOX_TEXT_LEN)
+                    {
+                        MessageBoxA(hDlg, "Invalid window selection", g_szMsgBoxTitle, MB_OK);
+                        return TRUE;
+                    }
+
+                    char* szWindowTitle = new char[textLen + 1];
+                    SendMessage(hListBox, LB_GETTEXT, g_dwSelectedIndex, (LPARAM)szWindowTitle);
+
+                    HWND hTargetWnd = FindWindowA(NULL, szWindowTitle);
+                    delete[] szWindowTitle;
+
+                    if (!hTargetWnd)
+                    {
+                        MessageBoxA(hDlg, "Window cannot be found or is no longer open", g_szMsgBoxTitle, MB_OK);
+                        return TRUE;
+                    }
+
+                    GetWindowThreadProcessId(hTargetWnd, &dwPID);
 
                     if (dwPID)
                     {
+                        // Get the actual process name from PID
+                        HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+                        if (hSnapshot != INVALID_HANDLE_VALUE)
+                        {
+                            PROCESSENTRY32 pe32 = { 0 };
+                            pe32.dwSize = sizeof(PROCESSENTRY32);
+
+                            if (Process32First(hSnapshot, &pe32))
+                            {
+                                do
+                                {
+                                    if (pe32.th32ProcessID == dwPID)
+                                    {
+                                        // Found the process, save its exe name
+                                        strncpy(szProcessName, pe32.szExeFile, MAX_PATH - 1);
+                                        szProcessName[MAX_PATH - 1] = '\0';
+                                        break;
+                                    }
+                                } while (Process32Next(hSnapshot, &pe32));
+                            }
+
+                            CloseHandle(hSnapshot);
+                        }
+
                         char szStatus[512];
                         _snprintf(szStatus, sizeof(szStatus) - 1, "PID: %i is chosen", dwPID);
                         szStatus[sizeof(szStatus) - 1] = '\0';
                         SetDlgItemTextA(hDlg, IDC_STATUS_TEXT, szStatus);
                     }
+                }
+                else
+                {
+                    // Process mode
+                    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
 
-                    CloseHandle(hSnapshot);
+                    if (hSnapshot != INVALID_HANDLE_VALUE)
+                    {
+                        HWND hListBox = GetDlgItem(hDlg, IDC_PROCESS_LIST);
+
+                        PROCESSENTRY32 pe32 = { 0 };
+                        pe32.dwSize = sizeof(PROCESSENTRY32);
+
+                        dwPID = GetSelectedProcessPID(hDlg, hListBox, &pe32, hSnapshot);
+
+                        if (dwPID)
+                        {
+                            char szStatus[512];
+                            _snprintf(szStatus, sizeof(szStatus) - 1, "PID: %i is chosen", dwPID);
+                            szStatus[sizeof(szStatus) - 1] = '\0';
+                            SetDlgItemTextA(hDlg, IDC_STATUS_TEXT, szStatus);
+                        }
+
+                        CloseHandle(hSnapshot);
+                    }
                 }
             }
 
             // Only inject if we successfully got a PID
             if (dwPID != 0)
             {
-                InjectDLL(hDlg, dwPID, strlen(g_szDllPath) + 1);
+                InjectDLL(hDlg, dwPID, strlen(g_szDllPath) + 1, szProcessName);
             }
             // Note: If dwPID is 0, error messages have already been shown by
             // GetSelectedProcessPID (for no selection) or earlier window mode checks
@@ -223,15 +352,18 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
         {
             if (g_bWatcherActive)
             {
-                g_bWatcherStop = TRUE;
-                CheckDlgButton(hDlg, IDC_USE_WATCH, BST_CHECKED);
+                StopProcessWatcher(hDlg);
             }
             else
             {
-                g_bWatcherActive = TRUE;
-                CreateThread(NULL, 0, ProcessWatcherThread, hDlg, 0, NULL);
-                // Thread handle is intentionally not closed - thread manages its own lifetime
+                StartProcessWatcher(hDlg);
             }
+            return TRUE;
+        }
+
+        case IDC_USE_LAST:
+        {
+            LoadLastInjection(hDlg);
             return TRUE;
         }
 
@@ -324,7 +456,7 @@ DWORD WINAPI ProcessWatcherThread(LPVOID lpParameter)
                         DWORD dwPID = pe32.th32ProcessID;
                         Sleep(500);
 
-                        if (!InjectDLL(hDlg, dwPID, strlen(g_szDllPath) + 1))
+                        if (!InjectDLL(hDlg, dwPID, strlen(g_szDllPath) + 1, szProcessName))
                         {
                             CloseHandle(hSnapshot);
                             g_bWatcherActive = FALSE;
@@ -333,6 +465,7 @@ DWORD WINAPI ProcessWatcherThread(LPVOID lpParameter)
                             return 1;
                         }
 
+                        // Save successful watcher injection (already saved in InjectDLL)
                         Sleep(100);
                         CloseHandle(hSnapshot);
                         goto WATCHER_EXIT;
@@ -356,7 +489,7 @@ WATCHER_EXIT:
 }
 
 // Inject DLL into target process
-BOOL InjectDLL(HWND hDlg, DWORD dwProcessId, SIZE_T dllPathLen)
+BOOL InjectDLL(HWND hDlg, DWORD dwProcessId, SIZE_T dllPathLen, const char* processName)
 {
     HANDLE hProcess = NULL;
     LPVOID lpRemoteMem = NULL;
@@ -414,6 +547,9 @@ BOOL InjectDLL(HWND hDlg, DWORD dwProcessId, SIZE_T dllPathLen)
         CloseHandle(hThread);
 
         bSuccess = TRUE;
+
+        // Save the last successful injection to INI file
+        SaveLastInjection(g_szDllPath, processName);
     }
     else
     {
@@ -634,4 +770,139 @@ void SetStatusText(HWND hDlg, const char* format, ...)
     va_end(args);
 
     SetDlgItemTextA(hDlg, IDC_STATUS_TEXT2, szBuffer);
+}
+
+// Save last successful injection to INI file
+void SaveLastInjection(const char* dllPath, const char* processName)
+{
+    char szIniPath[MAX_PATH] = { 0 };
+
+    // Get the current module path
+    GetModuleFileNameA(NULL, szIniPath, MAX_PATH);
+
+    // Remove the executable filename to get the directory
+    char* pLastSlash = strrchr(szIniPath, '\\');
+    if (pLastSlash)
+    {
+        *(pLastSlash + 1) = '\0';
+    }
+
+    // Append INI filename
+    strncat(szIniPath, INI_FILENAME, MAX_PATH - strlen(szIniPath) - 1);
+
+    // Write DLL path to INI file
+    WritePrivateProfileStringA("LastInjection", "DllPath", dllPath, szIniPath);
+
+    // Write process name to INI file (only if not empty)
+    if (processName && processName[0] != '\0')
+    {
+        WritePrivateProfileStringA("LastInjection", "ProcessName", processName, szIniPath);
+    }
+}
+
+// Load last injection settings from INI file
+void LoadLastInjection(HWND hDlg)
+{
+    char szIniPath[MAX_PATH] = { 0 };
+    char szDllPath[MAX_PATH] = { 0 };
+    char szProcessName[MAX_PATH] = { 0 };
+
+    // Get the current module path
+    GetModuleFileNameA(NULL, szIniPath, MAX_PATH);
+
+    // Remove the executable filename to get the directory
+    char* pLastSlash = strrchr(szIniPath, '\\');
+    if (pLastSlash)
+    {
+        *(pLastSlash + 1) = '\0';
+    }
+
+    // Append INI filename
+    strncat(szIniPath, INI_FILENAME, MAX_PATH - strlen(szIniPath) - 1);
+
+    // Read DLL path from INI file
+    GetPrivateProfileStringA("LastInjection", "DllPath", "", szDllPath, MAX_PATH, szIniPath);
+
+    // Read process name from INI file
+    GetPrivateProfileStringA("LastInjection", "ProcessName", "", szProcessName, MAX_PATH, szIniPath);
+
+    // Check if we got valid data
+    if (szDllPath[0] == '\0')
+    {
+        MessageBoxA(hDlg, "No previous injection found in INI file.", g_szMsgBoxTitle, MB_OK);
+        return;
+    }
+
+    // Set the DLL path
+    strncpy(g_szDllPath, szDllPath, MAX_PATH - 1);
+    g_szDllPath[MAX_PATH - 1] = '\0';
+
+    // Extract and display the filename
+    ExtractFilenameFromPath(g_szDllPath, NULL);
+    HWND hDllPath = GetDlgItem(hDlg, IDC_DLL_PATH);
+    SetWindowTextA(hDllPath, g_szDllFilename);
+
+    // Set the process name and start watcher if we have a process name
+    if (szProcessName[0] != '\0')
+    {
+        SetDlgItemTextA(hDlg, IDC_PROCESS_NAME, szProcessName);
+
+        SetStatusText(hDlg, "Loaded last injection: %s -> %s", g_szDllFilename, szProcessName);
+    }
+    else
+    {
+        SetStatusText(hDlg, "Loaded last DLL: %s", g_szDllFilename);
+    }
+}
+
+// Start process watcher thread
+void StartProcessWatcher(HWND hDlg)
+{
+    if (!g_bWatcherActive)
+    {
+        g_bWatcherActive = TRUE;
+        CheckDlgButton(hDlg, IDC_USE_WATCH, BST_CHECKED);
+        CreateThread(NULL, 0, ProcessWatcherThread, hDlg, 0, NULL);
+        // Thread handle is intentionally not closed - thread manages its own lifetime
+    }
+}
+
+// Stop process watcher thread
+void StopProcessWatcher(HWND hDlg)
+{
+    if (g_bWatcherActive)
+    {
+        g_bWatcherStop = TRUE;
+        CheckDlgButton(hDlg, IDC_USE_WATCH, BST_UNCHECKED);
+    }
+}
+
+// Find process by name and return PID
+DWORD FindProcessByName(const char* processName)
+{
+    DWORD dwPID = 0;
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+
+    if (hSnapshot == INVALID_HANDLE_VALUE)
+    {
+        return 0;
+    }
+
+    PROCESSENTRY32 pe32 = { 0 };
+    pe32.dwSize = sizeof(PROCESSENTRY32);
+
+    if (Process32First(hSnapshot, &pe32))
+    {
+        do
+        {
+            if (_stricmp(pe32.szExeFile, processName) == 0)
+            {
+                dwPID = pe32.th32ProcessID;
+                break;
+            }
+        } while (Process32Next(hSnapshot, &pe32));
+    }
+
+    CloseHandle(hSnapshot);
+    return dwPID;
 }
