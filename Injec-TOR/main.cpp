@@ -707,7 +707,8 @@ void ShowAboutDialog(HWND hDlg)
         "By: g3nuin3  Many thanks to Hunter!\n\n"
         "Shoutz:\n"
         "Luap, L.Spiro, st00ner, Fairlight, evobyte, Xan, moklop, catch22, SasukeHa\n"
-        "ScOOp, Gunout, Revoked, Borna, kemicza, ILA, etc.. etc";
+        "ScOOp, Gunout, Revoked, Borna, kemicza, ILA, etc.. etc\n\n"
+        "Recreated and updated by CyanideByte";
 
     const char* szHelp =
         " 1.) Load a dll \n"
