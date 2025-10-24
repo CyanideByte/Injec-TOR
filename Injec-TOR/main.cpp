@@ -1,6 +1,7 @@
 /*
- * InjecTOR - A stealthy DLL injector v1.1+
+ * InjecTOR - A stealthy DLL injector v1.2
  * By: g3nuin3
+ * Recreated and updated by CyanideByte
  *
  * Recreated from reverse engineering
  */
@@ -703,7 +704,7 @@ DWORD GetSelectedProcessPID(HWND hDlg, HWND hListBox, PROCESSENTRY32* pe32, HAND
 void ShowAboutDialog(HWND hDlg)
 {
     const char* szAbout =
-        "A stealthy Dll injector v1.1+ \n"
+        "A stealthy Dll injector v1.2\n"
         "By: g3nuin3  Many thanks to Hunter!\n\n"
         "Shoutz:\n"
         "Luap, L.Spiro, st00ner, Fairlight, evobyte, Xan, moklop, catch22, SasukeHa\n"
