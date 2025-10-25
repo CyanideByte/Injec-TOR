@@ -47,6 +47,7 @@ BOOL g_bWindowMode = FALSE;
 DWORD g_dwSelectedIndex = 0;
 ProcessArchitecture g_DllArchitecture = ARCH_UNKNOWN;            // Architecture of loaded DLL
 char g_szSearchFilter[256] = { 0 };                              // Search filter text
+BOOL g_bCompatibleOnly = FALSE;                                  // Filter to show only compatible processes
 
 // String constants
 const char* g_szProcesses = "Processes";
@@ -274,6 +275,14 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
         if (wmId == IDC_SEARCH_FILTER && wmEvent == EN_CHANGE)
         {
             GetDlgItemTextA(hDlg, IDC_SEARCH_FILTER, g_szSearchFilter, sizeof(g_szSearchFilter));
+            ApplySearchFilter(hDlg);
+            return TRUE;
+        }
+
+        // Handle compatible filter checkbox
+        if (wmId == IDC_COMPATIBLE_ONLY && wmEvent == BN_CLICKED)
+        {
+            g_bCompatibleOnly = (IsDlgButtonChecked(hDlg, IDC_COMPATIBLE_ONLY) == BST_CHECKED);
             ApplySearchFilter(hDlg);
             return TRUE;
         }
@@ -811,6 +820,16 @@ void EnumerateProcesses(HWND hDlg)
             // Check if we can open the process (if not, it likely requires elevation)
             BOOL bCanOpen = CanOpenProcess(pe32.th32ProcessID);
 
+            // Apply compatible filter if enabled (only if DLL is loaded)
+            if (g_bCompatibleOnly && g_DllArchitecture != ARCH_UNKNOWN)
+            {
+                // Only show if: architectures match AND process is accessible
+                if (!IsArchitectureCompatible(g_DllArchitecture, arch) || !bCanOpen)
+                {
+                    continue; // Skip this process
+                }
+            }
+
             // Format: "processname.exe [x86]" or "[!] processname.exe [x86]" for protected processes
             char szProcessWithArch[MAX_PATH + 20] = { 0 };
             if (!bCanOpen)
@@ -877,6 +896,17 @@ BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
     {
         arch = GetProcessArchitecture(dwPID);
         bCanOpen = CanOpenProcess(dwPID);
+    }
+
+    // Apply compatible filter if enabled (only if DLL is loaded)
+    if (g_bCompatibleOnly && g_DllArchitecture != ARCH_UNKNOWN)
+    {
+        // Only show if: architectures match AND process is accessible
+        if (!IsArchitectureCompatible(g_DllArchitecture, arch) || !bCanOpen)
+        {
+            delete[] szWindowTitle;
+            return TRUE; // Skip this window
+        }
     }
 
     // Format with architecture: "Window Title [x86]" or "[!] Window Title [x86]" for protected processes
