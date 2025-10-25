@@ -15,10 +15,17 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shellapi.h>
+#include <dwmapi.h>
 #include <stdio.h>
 #include "resource.h"
 
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "dwmapi.lib")
+
+// Dark mode attribute (for Windows 10 version 1809+)
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
 
 // Constants
 #define MAX_LISTBOX_TEXT_LEN 32767
@@ -48,6 +55,10 @@ DWORD g_dwSelectedIndex = 0;
 ProcessArchitecture g_DllArchitecture = ARCH_UNKNOWN;            // Architecture of loaded DLL
 char g_szSearchFilter[256] = { 0 };                              // Search filter text
 BOOL g_bCompatibleOnly = FALSE;                                  // Filter to show only compatible processes
+BOOL g_bDarkMode = FALSE;                                        // Dark mode enabled
+HBRUSH g_hDarkBrush = NULL;                                      // Dark background brush
+HBRUSH g_hLightBrush = NULL;                                     // Light background brush
+HBRUSH g_hButtonBrush = NULL;                                    // Button background brush
 
 // String constants
 const char* g_szProcesses = "Processes";
@@ -83,6 +94,7 @@ void ApplySearchFilter(HWND hDlg);
 void ExtractProcessName(const char* listboxText, char* processName, size_t maxLen);
 BOOL IsRunningAsAdmin();
 BOOL CanOpenProcess(DWORD dwProcessId);
+void ApplyDarkMode(HWND hDlg, BOOL bEnable);
 
 // WinMain entry point
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
@@ -108,6 +120,11 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
         // Enable drag-and-drop for DLL files
         DragAcceptFiles(hDlg, TRUE);
 
+        // Initialize color brushes
+        g_hDarkBrush = CreateSolidBrush(RGB(30, 30, 30));
+        g_hLightBrush = CreateSolidBrush(GetSysColor(COLOR_3DFACE));
+        g_hButtonBrush = CreateSolidBrush(RGB(50, 50, 50));
+
         // Check if running as admin and show warning if not
         if (!IsRunningAsAdmin())
         {
@@ -121,8 +138,66 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
     }
 
     case WM_CLOSE:
+        // Cleanup brushes
+        if (g_hDarkBrush)
+            DeleteObject(g_hDarkBrush);
+        if (g_hLightBrush)
+            DeleteObject(g_hLightBrush);
+        if (g_hButtonBrush)
+            DeleteObject(g_hButtonBrush);
         EndDialog(hDlg, 0);
         return FALSE;
+
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLORDLG:
+    {
+        if (g_bDarkMode)
+        {
+            HDC hdcStatic = (HDC)wParam;
+            SetTextColor(hdcStatic, RGB(220, 220, 220));
+            SetBkColor(hdcStatic, RGB(30, 30, 30));
+            return (INT_PTR)g_hDarkBrush;
+        }
+        break;
+    }
+
+    case WM_CTLCOLOREDIT:
+    {
+        if (g_bDarkMode)
+        {
+            HDC hdcEdit = (HDC)wParam;
+            SetTextColor(hdcEdit, RGB(220, 220, 220));
+            SetBkColor(hdcEdit, RGB(45, 45, 45));
+            if (!g_hDarkBrush)
+                g_hDarkBrush = CreateSolidBrush(RGB(45, 45, 45));
+            return (INT_PTR)CreateSolidBrush(RGB(45, 45, 45));
+        }
+        break;
+    }
+
+    case WM_CTLCOLORBTN:
+    {
+        if (g_bDarkMode)
+        {
+            HDC hdcButton = (HDC)wParam;
+            SetTextColor(hdcButton, RGB(220, 220, 220));
+            SetBkMode(hdcButton, TRANSPARENT);
+            return (INT_PTR)g_hButtonBrush;
+        }
+        break;
+    }
+
+    case WM_CTLCOLORLISTBOX:
+    {
+        if (g_bDarkMode)
+        {
+            HDC hdcListBox = (HDC)wParam;
+            SetTextColor(hdcListBox, RGB(220, 220, 220));
+            SetBkColor(hdcListBox, RGB(45, 45, 45));
+            return (INT_PTR)CreateSolidBrush(RGB(45, 45, 45));
+        }
+        break;
+    }
 
     case WM_DROPFILES:
     {
@@ -177,7 +252,129 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
     {
         LPDRAWITEMSTRUCT pDIS = (LPDRAWITEMSTRUCT)lParam;
 
-        // Only handle our process list
+        // Handle buttons in dark mode
+        if (pDIS->CtlType == ODT_BUTTON)
+        {
+            // Get button text
+            char szText[256] = { 0 };
+            GetWindowTextA(pDIS->hwndItem, szText, sizeof(szText));
+
+            // Set colors based on state and mode
+            COLORREF bgColor, textColor;
+            if (g_bDarkMode)
+            {
+                if (pDIS->itemState & ODS_SELECTED)
+                {
+                    bgColor = RGB(70, 70, 70);
+                    textColor = RGB(255, 255, 255);
+                }
+                else
+                {
+                    bgColor = RGB(50, 50, 50);
+                    textColor = RGB(220, 220, 220);
+                }
+            }
+            else
+            {
+                bgColor = GetSysColor(COLOR_BTNFACE);
+                textColor = GetSysColor(COLOR_BTNTEXT);
+            }
+
+            // Fill button background
+            HBRUSH hBrush = CreateSolidBrush(bgColor);
+            FillRect(pDIS->hDC, &pDIS->rcItem, hBrush);
+            DeleteObject(hBrush);
+
+            // Draw 3D border effect
+            RECT rc = pDIS->rcItem;
+            BOOL bPressed = (pDIS->itemState & ODS_SELECTED);
+
+            if (g_bDarkMode)
+            {
+                // Dark mode 3D effect with double border for depth
+                if (bPressed)
+                {
+                    // Pressed/sunken look
+                    HPEN hPenDarkOuter = CreatePen(PS_SOLID, 1, RGB(10, 10, 10));
+                    HPEN hPenDarkInner = CreatePen(PS_SOLID, 1, RGB(30, 30, 30));
+
+                    // Outer dark border (top and left)
+                    SelectObject(pDIS->hDC, hPenDarkOuter);
+                    MoveToEx(pDIS->hDC, rc.left, rc.bottom - 1, NULL);
+                    LineTo(pDIS->hDC, rc.left, rc.top);
+                    LineTo(pDIS->hDC, rc.right - 1, rc.top);
+
+                    // Inner shadow (top and left)
+                    SelectObject(pDIS->hDC, hPenDarkInner);
+                    MoveToEx(pDIS->hDC, rc.left + 1, rc.bottom - 2, NULL);
+                    LineTo(pDIS->hDC, rc.left + 1, rc.top + 1);
+                    LineTo(pDIS->hDC, rc.right - 2, rc.top + 1);
+
+                    DeleteObject(hPenDarkOuter);
+                    DeleteObject(hPenDarkInner);
+                }
+                else
+                {
+                    // Raised look with highlight and shadow
+                    HPEN hPenHighlight = CreatePen(PS_SOLID, 1, RGB(90, 90, 90));
+                    HPEN hPenLight = CreatePen(PS_SOLID, 1, RGB(70, 70, 70));
+                    HPEN hPenShadow = CreatePen(PS_SOLID, 1, RGB(30, 30, 30));
+                    HPEN hPenDark = CreatePen(PS_SOLID, 1, RGB(15, 15, 15));
+
+                    // Outer highlight (top and left)
+                    SelectObject(pDIS->hDC, hPenHighlight);
+                    MoveToEx(pDIS->hDC, rc.left, rc.bottom - 1, NULL);
+                    LineTo(pDIS->hDC, rc.left, rc.top);
+                    LineTo(pDIS->hDC, rc.right - 1, rc.top);
+
+                    // Inner highlight
+                    SelectObject(pDIS->hDC, hPenLight);
+                    MoveToEx(pDIS->hDC, rc.left + 1, rc.bottom - 2, NULL);
+                    LineTo(pDIS->hDC, rc.left + 1, rc.top + 1);
+                    LineTo(pDIS->hDC, rc.right - 2, rc.top + 1);
+
+                    // Outer shadow (bottom and right)
+                    SelectObject(pDIS->hDC, hPenDark);
+                    MoveToEx(pDIS->hDC, rc.right - 1, rc.top, NULL);
+                    LineTo(pDIS->hDC, rc.right - 1, rc.bottom - 1);
+                    LineTo(pDIS->hDC, rc.left, rc.bottom - 1);
+
+                    // Inner shadow
+                    SelectObject(pDIS->hDC, hPenShadow);
+                    MoveToEx(pDIS->hDC, rc.right - 2, rc.top + 1, NULL);
+                    LineTo(pDIS->hDC, rc.right - 2, rc.bottom - 2);
+                    LineTo(pDIS->hDC, rc.left + 1, rc.bottom - 2);
+
+                    DeleteObject(hPenHighlight);
+                    DeleteObject(hPenLight);
+                    DeleteObject(hPenShadow);
+                    DeleteObject(hPenDark);
+                }
+            }
+            else
+            {
+                // Light mode - use Windows DrawEdge for proper 3D look
+                UINT edge = bPressed ? BDR_SUNKENOUTER : BDR_RAISEDOUTER;
+                DrawEdge(pDIS->hDC, &rc, edge, BF_RECT);
+            }
+
+            // Draw text
+            SetTextColor(pDIS->hDC, textColor);
+            SetBkMode(pDIS->hDC, TRANSPARENT);
+            DrawTextA(pDIS->hDC, szText, -1, &pDIS->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+            // Draw focus rectangle
+            if (pDIS->itemState & ODS_FOCUS)
+            {
+                RECT rcFocus = pDIS->rcItem;
+                InflateRect(&rcFocus, -3, -3);
+                DrawFocusRect(pDIS->hDC, &rcFocus);
+            }
+
+            return TRUE;
+        }
+
+        // Handle our process list
         if (pDIS->CtlID != IDC_PROCESS_LIST)
             return FALSE;
 
@@ -219,12 +416,12 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
         else
         {
             // Not selected - apply color coding
-            bgColor = GetSysColor(COLOR_WINDOW);
+            bgColor = g_bDarkMode ? RGB(30, 30, 30) : GetSysColor(COLOR_WINDOW);
 
             if (g_DllArchitecture == ARCH_UNKNOWN)
             {
                 // No DLL loaded, show normal color
-                textColor = GetSysColor(COLOR_WINDOWTEXT);
+                textColor = g_bDarkMode ? RGB(220, 220, 220) : GetSysColor(COLOR_WINDOWTEXT);
             }
             else if (bHasWarning && bCompatible)
             {
@@ -284,6 +481,14 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
         {
             g_bCompatibleOnly = (IsDlgButtonChecked(hDlg, IDC_COMPATIBLE_ONLY) == BST_CHECKED);
             ApplySearchFilter(hDlg);
+            return TRUE;
+        }
+
+        // Handle dark mode checkbox
+        if (wmId == IDC_DARK_MODE && wmEvent == BN_CLICKED)
+        {
+            g_bDarkMode = (IsDlgButtonChecked(hDlg, IDC_DARK_MODE) == BST_CHECKED);
+            ApplyDarkMode(hDlg, g_bDarkMode);
             return TRUE;
         }
 
@@ -1499,4 +1704,58 @@ BOOL CanOpenProcess(DWORD dwProcessId)
         return TRUE;
     }
     return FALSE;
+}
+
+// Apply dark mode to dialog
+void ApplyDarkMode(HWND hDlg, BOOL bEnable)
+{
+    // Set dark mode for title bar (Windows 10 1809+)
+    BOOL useDarkMode = bEnable;
+    DwmSetWindowAttribute(hDlg, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
+
+    // Workaround: Briefly hide/show to skip the fade animation
+    // This makes the transition appear instant
+    ShowWindow(hDlg, SW_HIDE);
+
+    // Force immediate redraw of the non-client area (title bar)
+    SetWindowPos(hDlg, NULL, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+
+    ShowWindow(hDlg, SW_SHOW);
+
+    // Toggle BS_OWNERDRAW style on all buttons based on dark mode
+    const int buttonIds[] = {
+        IDC_OK, IDC_LOAD_DLL, IDC_ABOUT, IDC_REFRESH,
+        IDC_INJECT, IDC_USE_LAST, IDC_USE, IDC_EJECT,
+        IDC_WINDOW_BUTTON
+    };
+
+    for (int i = 0; i < sizeof(buttonIds) / sizeof(buttonIds[0]); i++)
+    {
+        HWND hButton = GetDlgItem(hDlg, buttonIds[i]);
+        if (hButton)
+        {
+            LONG style = GetWindowLong(hButton, GWL_STYLE);
+            if (bEnable)
+            {
+                // Enable owner draw in dark mode
+                style |= BS_OWNERDRAW;
+            }
+            else
+            {
+                // Disable owner draw in light mode (use native rendering)
+                style &= ~BS_OWNERDRAW;
+            }
+            SetWindowLong(hButton, GWL_STYLE, style);
+
+            // Force button to redraw with new style
+            InvalidateRect(hButton, NULL, TRUE);
+        }
+    }
+
+    // Force redraw of all controls
+    InvalidateRect(hDlg, NULL, TRUE);
+
+    // Refresh process list to update colors
+    ApplySearchFilter(hDlg);
 }

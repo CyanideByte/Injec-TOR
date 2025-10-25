@@ -28,6 +28,7 @@
 #define IDC_USE_LAST                    1022
 #define IDC_SEARCH_FILTER               1023
 #define IDC_COMPATIBLE_ONLY             1024
+#define IDC_DARK_MODE                   1025
 #define IDC_STATIC                      -1
 
 // Next default values for new objects
@@ -36,7 +37,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        106
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1025
+#define _APS_NEXT_CONTROL_VALUE         1026
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif
