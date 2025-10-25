@@ -29,7 +29,7 @@
 
 // Constants
 #define MAX_LISTBOX_TEXT_LEN 32767
-#define INI_FILENAME "InjecTOR.ini"
+#define INI_FILENAME "Injec-TOR.ini"
 
 // Define PROCESS_QUERY_LIMITED_INFORMATION if not available (for older SDKs)
 #ifndef PROCESS_QUERY_LIMITED_INFORMATION
@@ -88,6 +88,7 @@ void StopProcessWatcher(HWND hDlg);
 DWORD FindProcessByName(const char* processName);
 ProcessArchitecture GetProcessArchitecture(DWORD dwProcessId);
 ProcessArchitecture GetDllArchitecture(const char* dllPath);
+ProcessArchitecture GetInjectorArchitecture();
 const char* ArchitectureToString(ProcessArchitecture arch);
 BOOL IsArchitectureCompatible(ProcessArchitecture dllArch, ProcessArchitecture procArch);
 void ApplySearchFilter(HWND hDlg);
@@ -223,6 +224,16 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
 
                 // Detect DLL architecture
                 g_DllArchitecture = GetDllArchitecture(g_szDllPath);
+
+                // Check if 32-bit injector trying to load 64-bit DLL
+                ProcessArchitecture injectorArch = GetInjectorArchitecture();
+                if (injectorArch == ARCH_X86 && g_DllArchitecture == ARCH_X64)
+                {
+                    MessageBoxA(hDlg, "Cannot load x64 DLL in 32-bit injector. Please use the 64-bit build.", g_szMsgBoxTitle, MB_OK);
+                    g_szDllPath[0] = '\0';  // Clear the DLL path
+                    g_DllArchitecture = ARCH_UNKNOWN;
+                    return TRUE;
+                }
 
                 // Display the filename with architecture (not full path) in the UI
                 char szDllWithArch[1024 + 16] = { 0 };
@@ -509,8 +520,12 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
                     // If in window mode, get the actual executable name
                     if (g_bWindowMode)
                     {
+                        // Extract clean window title (remove [!] prefix and [x86]/[x64] suffix)
+                        char szCleanTitle[MAX_PATH] = { 0 };
+                        ExtractProcessName(szSelectedText, szCleanTitle, sizeof(szCleanTitle));
+
                         // Find the window by title
-                        HWND hTargetWnd = FindWindowA(NULL, szSelectedText);
+                        HWND hTargetWnd = FindWindowA(NULL, szCleanTitle);
                         if (hTargetWnd)
                         {
                             DWORD dwPID = 0;
@@ -640,7 +655,7 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
                     HWND hListBox = GetDlgItem(hDlg, IDC_PROCESS_LIST);
 
                     LRESULT selIndex = SendMessage(hListBox, LB_GETCURSEL, 0, 0);
-                    g_dwSelectedIndex = selIndex;
+                    g_dwSelectedIndex = (DWORD)selIndex;
 
                     LRESULT textLen = SendMessage(hListBox, LB_GETTEXTLEN, selIndex, 0);
                     if (textLen <= 0 || textLen >= MAX_LISTBOX_TEXT_LEN)
@@ -652,7 +667,11 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
                     char* szWindowTitle = new char[textLen + 1];
                     SendMessage(hListBox, LB_GETTEXT, g_dwSelectedIndex, (LPARAM)szWindowTitle);
 
-                    HWND hTargetWnd = FindWindowA(NULL, szWindowTitle);
+                    // Extract clean window title (remove [!] prefix and [x86]/[x64] suffix)
+                    char szCleanTitle[512] = { 0 };
+                    ExtractProcessName(szWindowTitle, szCleanTitle, sizeof(szCleanTitle));
+
+                    HWND hTargetWnd = FindWindowA(NULL, szCleanTitle);
                     delete[] szWindowTitle;
 
                     if (!hTargetWnd)
@@ -948,8 +967,157 @@ BOOL InjectDLL(HWND hDlg, DWORD dwProcessId, SIZE_T dllPathLen, const char* proc
     }
 
     // Get address of LoadLibraryA
-    HMODULE hKernel32 = GetModuleHandleA("kernel32");
-    LPTHREAD_START_ROUTINE pfnLoadLibrary = (LPTHREAD_START_ROUTINE)GetProcAddress(hKernel32, "LoadLibraryA");
+    // For x64 injector injecting into x86 process, we need to get LoadLibraryA from the target process's kernel32
+    LPTHREAD_START_ROUTINE pfnLoadLibrary = NULL;
+
+#ifdef _WIN64
+    // Check if target process is 32-bit when we're 64-bit
+    if (procArch == ARCH_X86)
+    {
+        // For WOW64 injection, we need to find LoadLibraryA in the target's kernel32
+        // We'll use a different approach: enumerate modules in the target process
+        HMODULE hKernel32 = NULL;
+        HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, dwProcessId);
+        if (hSnapshot != INVALID_HANDLE_VALUE)
+        {
+            MODULEENTRY32 me32 = { 0 };
+            me32.dwSize = sizeof(MODULEENTRY32);
+
+            if (Module32First(hSnapshot, &me32))
+            {
+                do
+                {
+                    if (_stricmp(me32.szModule, "kernel32.dll") == 0)
+                    {
+                        hKernel32 = me32.hModule;
+                        break;
+                    }
+                } while (Module32Next(hSnapshot, &me32));
+            }
+            CloseHandle(hSnapshot);
+        }
+
+        if (hKernel32)
+        {
+            // For WOW64 injection, we need to find LoadLibraryA in the target's 32-bit kernel32
+            // Since x64 process can't load x86 DLL, we'll map the file and parse exports
+            char szSysWOW64Path[MAX_PATH];
+            GetSystemWow64DirectoryA(szSysWOW64Path, MAX_PATH);
+            strncat_s(szSysWOW64Path, MAX_PATH, "\\kernel32.dll", _TRUNCATE);
+
+            // Map the 32-bit kernel32.dll file
+            HANDLE hFile = CreateFileA(szSysWOW64Path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+            if (hFile != INVALID_HANDLE_VALUE)
+            {
+                HANDLE hMapping = CreateFileMappingA(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
+                if (hMapping)
+                {
+                    BYTE* pBase = (BYTE*)MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0);
+                    if (pBase)
+                    {
+                        // Parse PE headers
+                        IMAGE_DOS_HEADER* pDosHeader = (IMAGE_DOS_HEADER*)pBase;
+                        if (pDosHeader->e_magic == IMAGE_DOS_SIGNATURE)
+                        {
+                            IMAGE_NT_HEADERS32* pNtHeaders = (IMAGE_NT_HEADERS32*)(pBase + pDosHeader->e_lfanew);
+                            if (pNtHeaders->Signature == IMAGE_NT_SIGNATURE)
+                            {
+                                // Get export directory RVA
+                                DWORD exportRVA = pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+                                if (exportRVA != 0)
+                                {
+                                    // Convert RVA to file offset using section headers
+                                    IMAGE_SECTION_HEADER* pSection = IMAGE_FIRST_SECTION(pNtHeaders);
+                                    DWORD exportFileOffset = 0;
+
+                                    for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++)
+                                    {
+                                        if (exportRVA >= pSection[i].VirtualAddress &&
+                                            exportRVA < pSection[i].VirtualAddress + pSection[i].Misc.VirtualSize)
+                                        {
+                                            exportFileOffset = pSection[i].PointerToRawData + (exportRVA - pSection[i].VirtualAddress);
+                                            break;
+                                        }
+                                    }
+
+                                    if (exportFileOffset != 0)
+                                    {
+                                        IMAGE_EXPORT_DIRECTORY* pExportDir = (IMAGE_EXPORT_DIRECTORY*)(pBase + exportFileOffset);
+
+                                        // Convert export table RVAs to file offsets
+                                        auto RvaToFileOffset = [&](DWORD rva) -> DWORD {
+                                            for (int i = 0; i < pNtHeaders->FileHeader.NumberOfSections; i++)
+                                            {
+                                                if (rva >= pSection[i].VirtualAddress &&
+                                                    rva < pSection[i].VirtualAddress + pSection[i].Misc.VirtualSize)
+                                                {
+                                                    return pSection[i].PointerToRawData + (rva - pSection[i].VirtualAddress);
+                                                }
+                                            }
+                                            return 0;
+                                        };
+
+                                        DWORD functionsOffset = RvaToFileOffset(pExportDir->AddressOfFunctions);
+                                        DWORD namesOffset = RvaToFileOffset(pExportDir->AddressOfNames);
+                                        DWORD ordinalsOffset = RvaToFileOffset(pExportDir->AddressOfNameOrdinals);
+
+                                        if (functionsOffset && namesOffset && ordinalsOffset)
+                                        {
+                                            DWORD* pFunctions = (DWORD*)(pBase + functionsOffset);
+                                            DWORD* pNames = (DWORD*)(pBase + namesOffset);
+                                            WORD* pOrdinals = (WORD*)(pBase + ordinalsOffset);
+
+                                            // Search for LoadLibraryA
+                                            for (DWORD i = 0; i < pExportDir->NumberOfNames; i++)
+                                            {
+                                                DWORD nameOffset = RvaToFileOffset(pNames[i]);
+                                                if (nameOffset)
+                                                {
+                                                    char* szFuncName = (char*)(pBase + nameOffset);
+                                                    if (strcmp(szFuncName, "LoadLibraryA") == 0)
+                                                    {
+                                                        DWORD funcRVA = pFunctions[pOrdinals[i]];
+                                                        // Calculate address in target process (RVA is used directly for memory address)
+                                                        pfnLoadLibrary = (LPTHREAD_START_ROUTINE)((DWORD_PTR)hKernel32 + funcRVA);
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        UnmapViewOfFile(pBase);
+                    }
+                    CloseHandle(hMapping);
+                }
+                CloseHandle(hFile);
+            }
+
+            if (!pfnLoadLibrary)
+            {
+                MessageBoxA(hDlg, "Could not resolve LoadLibraryA for WOW64 injection.", g_szMsgBoxTitle, MB_OK);
+                VirtualFreeEx(hProcess, lpRemoteMem, 0, MEM_RELEASE);
+                CloseHandle(hProcess);
+                return FALSE;
+            }
+        }
+        else
+        {
+            MessageBoxA(hDlg, "Could not find kernel32.dll in target process for WOW64 injection.", g_szMsgBoxTitle, MB_OK);
+            VirtualFreeEx(hProcess, lpRemoteMem, 0, MEM_RELEASE);
+            CloseHandle(hProcess);
+            return FALSE;
+        }
+    }
+    else
+#endif
+    {
+        // Same architecture injection - use local LoadLibraryA address
+        HMODULE hKernel32 = GetModuleHandleA("kernel32");
+        pfnLoadLibrary = (LPTHREAD_START_ROUTINE)GetProcAddress(hKernel32, "LoadLibraryA");
+    }
 
     // Create remote thread
     hThread = CreateRemoteThread(hProcess, NULL, 0, pfnLoadLibrary, lpRemoteMem, 0, NULL);
@@ -1190,7 +1358,7 @@ DWORD GetSelectedProcessPID(HWND hDlg, HWND hListBox, PROCESSENTRY32* pe32, HAND
     char szProcessName[256] = { 0 };
 
     LRESULT iSel = SendMessageA(hListBox, LB_GETCURSEL, 0, 0);
-    g_dwSelectedIndex = iSel;
+    g_dwSelectedIndex = (DWORD)iSel;
 
     if (iSel == LB_ERR)
     {
@@ -1282,6 +1450,16 @@ void BrowseForDLL(HWND hDlg)
 
         // Detect DLL architecture
         g_DllArchitecture = GetDllArchitecture(g_szDllPath);
+
+        // Check if 32-bit injector trying to load 64-bit DLL
+        ProcessArchitecture injectorArch = GetInjectorArchitecture();
+        if (injectorArch == ARCH_X86 && g_DllArchitecture == ARCH_X64)
+        {
+            MessageBoxA(hDlg, "Cannot load x64 DLL in 32-bit injector. Please use the 64-bit build.", g_szMsgBoxTitle, MB_OK);
+            g_szDllPath[0] = '\0';  // Clear the DLL path
+            g_DllArchitecture = ARCH_UNKNOWN;
+            return;
+        }
 
         // Display the filename with architecture (not full path) in the UI
         char szDllWithArch[1024 + 16] = { 0 };
@@ -1611,6 +1789,16 @@ ProcessArchitecture GetDllArchitecture(const char* dllPath)
     }
 }
 
+// Get the architecture of the injector itself
+ProcessArchitecture GetInjectorArchitecture()
+{
+#ifdef _WIN64
+    return ARCH_X64;
+#else
+    return ARCH_X86;
+#endif
+}
+
 // Convert architecture enum to string
 const char* ArchitectureToString(ProcessArchitecture arch)
 {
@@ -1633,7 +1821,16 @@ BOOL IsArchitectureCompatible(ProcessArchitecture dllArch, ProcessArchitecture p
         return TRUE; // Don't block if we can't determine
     }
 
-    return dllArch == procArch;
+    ProcessArchitecture injectorArch = GetInjectorArchitecture();
+
+    // x64 injector can inject both x86 and x64 DLLs into matching processes
+    if (injectorArch == ARCH_X64)
+    {
+        return dllArch == procArch;
+    }
+
+    // x86 injector can only inject x86 DLLs into x86 processes
+    return dllArch == ARCH_X86 && procArch == ARCH_X86;
 }
 
 // Apply search filter to process list
@@ -1735,7 +1932,7 @@ void ApplyDarkMode(HWND hDlg, BOOL bEnable)
         HWND hButton = GetDlgItem(hDlg, buttonIds[i]);
         if (hButton)
         {
-            LONG style = GetWindowLong(hButton, GWL_STYLE);
+            LONG_PTR style = GetWindowLongPtr(hButton, GWL_STYLE);
             if (bEnable)
             {
                 // Enable owner draw in dark mode
@@ -1746,7 +1943,7 @@ void ApplyDarkMode(HWND hDlg, BOOL bEnable)
                 // Disable owner draw in light mode (use native rendering)
                 style &= ~BS_OWNERDRAW;
             }
-            SetWindowLong(hButton, GWL_STYLE, style);
+            SetWindowLongPtr(hButton, GWL_STYLE, style);
 
             // Force button to redraw with new style
             InvalidateRect(hButton, NULL, TRUE);
