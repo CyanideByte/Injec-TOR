@@ -26,6 +26,7 @@
 #define IDC_LOAD_GROUP                  1018
 #define IDC_WINDOW_BUTTON               1021
 #define IDC_USE_LAST                    1022
+#define IDC_SEARCH_FILTER               1023
 #define IDC_STATIC                      -1
 
 // Next default values for new objects
@@ -34,7 +35,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        106
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1023
+#define _APS_NEXT_CONTROL_VALUE         1024
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif
