@@ -47,7 +47,7 @@ enum ProcessArchitecture
 // Global variables
 HINSTANCE g_hInstance = NULL;
 char g_szDllPath[MAX_PATH] = { 0 };                              // Full DLL path
-char g_szDllFilename[1024] = "GunzFuckV4.dll";                 // DLL filename buffer with default value (1024 bytes)
+char g_szDllFilename[1024] = { 0 };                              // DLL filename buffer (1024 bytes)
 volatile BOOL g_bWatcherActive = FALSE;
 volatile BOOL g_bWatcherStop = FALSE;
 BOOL g_bWindowMode = FALSE;
