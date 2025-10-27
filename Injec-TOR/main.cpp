@@ -46,6 +46,9 @@ enum ProcessArchitecture
 
 // Global variables
 HINSTANCE g_hInstance = NULL;
+HWND g_hMainDialog = NULL;                                       // Main child dialog handle
+HWND g_hSettingsDialog = NULL;                                   // Settings child dialog handle
+HWND g_hFrameDialog = NULL;                                      // Frame dialog handle
 char g_szDllPath[MAX_PATH] = { 0 };                              // Full DLL path
 char g_szDllFilename[1024] = { 0 };                              // DLL filename buffer (1024 bytes)
 volatile BOOL g_bWatcherActive = FALSE;
@@ -71,7 +74,11 @@ const char* g_szInjectionFailed = "Injection Failed..Falling Back..";
 const char* g_szMsgBoxTitle = "InjecTOR";
 
 // Function prototypes
+INT_PTR CALLBACK FrameDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
 INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+INT_PTR CALLBACK SettingsDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+void ShowMainView();
+void ShowSettingsView();
 BOOL InjectDLL(HWND hDlg, DWORD dwProcessId, SIZE_T dllPathLen, const char* processName);
 void EnumerateProcesses(HWND hDlg);
 BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam);
@@ -83,6 +90,8 @@ void SetStatusText(HWND hDlg, const char* format, ...);
 DWORD WINAPI ProcessWatcherThread(LPVOID lpParameter);
 void SaveLastInjection(const char* dllPath, const char* processName);
 void LoadLastInjection(HWND hDlg);
+void SaveDarkModeSetting(BOOL bDarkMode);
+void LoadDarkModeSetting();
 void StartProcessWatcher(HWND hDlg);
 void StopProcessWatcher(HWND hDlg);
 DWORD FindProcessByName(const char* processName);
@@ -102,18 +111,42 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 {
     g_hInstance = hInstance;
 
-    DialogBoxParam(hInstance, MAKEINTRESOURCE(IDD_MAIN_DIALOG), NULL, MainDialogProc, 0);
+    DialogBoxParam(hInstance, MAKEINTRESOURCE(IDD_FRAME_DIALOG), NULL, FrameDialogProc, 0);
 
     return 0;
 }
 
-// Main dialog procedure
-INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
+// Show main view (hide settings, show main)
+void ShowMainView()
+{
+    if (g_hSettingsDialog)
+        ShowWindow(g_hSettingsDialog, SW_HIDE);
+    if (g_hMainDialog)
+    {
+        ShowWindow(g_hMainDialog, SW_SHOW);
+        // Apply dark mode to main dialog in case it changed
+        ApplyDarkMode(g_hMainDialog, g_bDarkMode);
+    }
+}
+
+// Show settings view (hide main, show settings)
+void ShowSettingsView()
+{
+    if (g_hMainDialog)
+        ShowWindow(g_hMainDialog, SW_HIDE);
+    if (g_hSettingsDialog)
+        ShowWindow(g_hSettingsDialog, SW_SHOW);
+}
+
+// Frame dialog procedure
+INT_PTR CALLBACK FrameDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message)
     {
     case WM_INITDIALOG:
     {
+        g_hFrameDialog = hDlg;
+
         // Load icon
         HICON hIcon = LoadIcon(g_hInstance, MAKEINTRESOURCE(IDI_ICON1));
         SendMessage(hDlg, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
@@ -126,15 +159,159 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
         g_hLightBrush = CreateSolidBrush(GetSysColor(COLOR_3DFACE));
         g_hButtonBrush = CreateSolidBrush(RGB(50, 50, 50));
 
-        // Check if running as admin and show warning if not
-        if (!IsRunningAsAdmin())
+        // Load dark mode setting from INI file
+        LoadDarkModeSetting();
+
+        // Apply dark mode to frame if enabled
+        if (g_bDarkMode)
         {
-            SetStatusText(hDlg, "WARNING: Not elevated - some processes inaccessible");
+            BOOL useDarkMode = TRUE;
+            DwmSetWindowAttribute(hDlg, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
         }
 
-        // Enumerate processes
-        EnumerateProcesses(hDlg);
+        // Get client area
+        RECT rcClient;
+        GetClientRect(hDlg, &rcClient);
 
+        // Calculate where child dialogs should start by finding the banner's actual bottom position
+        // The banner and text are static controls in the frame, we need their actual pixel positions
+        RECT rcBanner = {8, 7, 8+237, 7+105};    // Dialog units
+        RECT rcText = {8, 114, 8+80, 114+8};     // Dialog units
+        MapDialogRect(hDlg, &rcBanner);           // Convert to pixels
+        MapDialogRect(hDlg, &rcText);             // Convert to pixels
+
+        // Child dialogs start after the text
+        int childY = rcText.bottom + 4;  // Add small gap
+
+        // Create main child dialog
+        g_hMainDialog = CreateDialogParam(g_hInstance, MAKEINTRESOURCE(IDD_MAIN_DIALOG),
+                                          hDlg, MainDialogProc, 0);
+        if (g_hMainDialog)
+        {
+            // Get the actual size of the child dialog after creation
+            RECT rcChild;
+            GetWindowRect(g_hMainDialog, &rcChild);
+            int childWidth = rcChild.right - rcChild.left;
+            int childHeight = rcChild.bottom - rcChild.top;
+
+            // Position it below the banner
+            MoveWindow(g_hMainDialog, 0, childY, childWidth, childHeight, FALSE);
+            ShowWindow(g_hMainDialog, SW_SHOW);
+        }
+
+        // Create settings child dialog (hidden initially)
+        g_hSettingsDialog = CreateDialogParam(g_hInstance, MAKEINTRESOURCE(IDD_SETTINGS_DIALOG),
+                                               hDlg, SettingsDialogProc, 0);
+        if (g_hSettingsDialog)
+        {
+            // Get the actual size of the child dialog after creation
+            RECT rcChild;
+            GetWindowRect(g_hSettingsDialog, &rcChild);
+            int childWidth = rcChild.right - rcChild.left;
+            int childHeight = rcChild.bottom - rcChild.top;
+
+            // Position it below the banner
+            MoveWindow(g_hSettingsDialog, 0, childY, childWidth, childHeight, FALSE);
+            ShowWindow(g_hSettingsDialog, SW_HIDE);
+        }
+
+        // Check if running as admin and update title bar
+        if (IsRunningAsAdmin())
+        {
+            char szTitle[256] = { 0 };
+            GetWindowTextA(hDlg, szTitle, sizeof(szTitle) - 20);
+            strncat(szTitle, " - Elevated", sizeof(szTitle) - strlen(szTitle) - 1);
+            szTitle[sizeof(szTitle) - 1] = '\0';
+            SetWindowTextA(hDlg, szTitle);
+        }
+
+        return TRUE;
+    }
+
+    case WM_SIZE:
+    {
+        // Calculate where child dialogs should be positioned (below banner and text)
+        RECT rcText = {8, 114, 8+80, 114+8};     // Dialog units
+        MapDialogRect(hDlg, &rcText);             // Convert to pixels
+        int childY = rcText.bottom + 4;           // Add small gap
+
+        if (g_hMainDialog)
+        {
+            RECT rcChild;
+            GetWindowRect(g_hMainDialog, &rcChild);
+            int childWidth = rcChild.right - rcChild.left;
+            int childHeight = rcChild.bottom - rcChild.top;
+            MoveWindow(g_hMainDialog, 0, childY, childWidth, childHeight, TRUE);
+        }
+
+        if (g_hSettingsDialog)
+        {
+            RECT rcChild;
+            GetWindowRect(g_hSettingsDialog, &rcChild);
+            int childWidth = rcChild.right - rcChild.left;
+            int childHeight = rcChild.bottom - rcChild.top;
+            MoveWindow(g_hSettingsDialog, 0, childY, childWidth, childHeight, TRUE);
+        }
+
+        return TRUE;
+    }
+
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLORDLG:
+    {
+        if (g_bDarkMode)
+        {
+            HDC hdcStatic = (HDC)wParam;
+            SetTextColor(hdcStatic, RGB(220, 220, 220));
+            SetBkColor(hdcStatic, RGB(30, 30, 30));
+            return (INT_PTR)g_hDarkBrush;
+        }
+        break;
+    }
+
+    case WM_CTLCOLOREDIT:
+    {
+        if (g_bDarkMode)
+        {
+            HDC hdcEdit = (HDC)wParam;
+            SetTextColor(hdcEdit, RGB(220, 220, 220));
+            SetBkColor(hdcEdit, RGB(45, 45, 45));
+            return (INT_PTR)CreateSolidBrush(RGB(45, 45, 45));
+        }
+        break;
+    }
+
+    case WM_CTLCOLORBTN:
+    {
+        if (g_bDarkMode)
+        {
+            HDC hdcButton = (HDC)wParam;
+            SetTextColor(hdcButton, RGB(220, 220, 220));
+            SetBkMode(hdcButton, TRANSPARENT);
+            return (INT_PTR)g_hButtonBrush;
+        }
+        break;
+    }
+
+    case WM_CTLCOLORLISTBOX:
+    {
+        if (g_bDarkMode)
+        {
+            HDC hdcListBox = (HDC)wParam;
+            SetTextColor(hdcListBox, RGB(220, 220, 220));
+            SetBkColor(hdcListBox, RGB(45, 45, 45));
+            return (INT_PTR)CreateSolidBrush(RGB(45, 45, 45));
+        }
+        break;
+    }
+
+    case WM_DROPFILES:
+    {
+        // Forward to main dialog if visible
+        if (g_hMainDialog && IsWindowVisible(g_hMainDialog))
+        {
+            SendMessage(g_hMainDialog, WM_DROPFILES, wParam, lParam);
+        }
         return TRUE;
     }
 
@@ -146,8 +323,44 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
             DeleteObject(g_hLightBrush);
         if (g_hButtonBrush)
             DeleteObject(g_hButtonBrush);
+
+        // Destroy child dialogs
+        if (g_hMainDialog)
+            DestroyWindow(g_hMainDialog);
+        if (g_hSettingsDialog)
+            DestroyWindow(g_hSettingsDialog);
+
         EndDialog(hDlg, 0);
-        return FALSE;
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+// Main dialog procedure
+INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    switch (message)
+    {
+    case WM_INITDIALOG:
+    {
+        // Apply dark mode if enabled
+        if (g_bDarkMode)
+        {
+            ApplyDarkMode(hDlg, TRUE);
+        }
+
+        // Show status based on elevation
+        if (!IsRunningAsAdmin())
+        {
+            SetStatusText(hDlg, "WARNING: Not elevated - some processes inaccessible to the injector");
+        }
+
+        // Enumerate processes
+        EnumerateProcesses(hDlg);
+
+        return TRUE;
+    }
 
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLORDLG:
@@ -495,14 +708,6 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
             return TRUE;
         }
 
-        // Handle dark mode checkbox
-        if (wmId == IDC_DARK_MODE && wmEvent == BN_CLICKED)
-        {
-            g_bDarkMode = (IsDlgButtonChecked(hDlg, IDC_DARK_MODE) == BST_CHECKED);
-            ApplyDarkMode(hDlg, g_bDarkMode);
-            return TRUE;
-        }
-
         // Handle listbox selection changes
         if (wmId == IDC_PROCESS_LIST && wmEvent == LBN_SELCHANGE)
         {
@@ -600,9 +805,17 @@ INT_PTR CALLBACK MainDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
             return TRUE;
         }
 
+        case IDC_SETTINGS_BUTTON:
+        {
+            ShowSettingsView();
+            return TRUE;
+        }
+
         case IDC_OK:
         case IDCANCEL:
-            EndDialog(hDlg, 0);
+            // Close the frame dialog (parent)
+            if (g_hFrameDialog)
+                SendMessage(g_hFrameDialog, WM_CLOSE, 0, 0);
             return TRUE;
 
         case IDC_REFRESH:
@@ -1585,6 +1798,54 @@ void LoadLastInjection(HWND hDlg)
     }
 }
 
+// Save dark mode setting to INI file
+void SaveDarkModeSetting(BOOL bDarkMode)
+{
+    char szIniPath[MAX_PATH] = { 0 };
+
+    // Get the current module path
+    GetModuleFileNameA(NULL, szIniPath, MAX_PATH);
+
+    // Remove the executable filename to get the directory
+    char* pLastSlash = strrchr(szIniPath, '\\');
+    if (pLastSlash)
+    {
+        *(pLastSlash + 1) = '\0';
+    }
+
+    // Append INI filename
+    strncat(szIniPath, INI_FILENAME, MAX_PATH - strlen(szIniPath) - 1);
+
+    // Write dark mode setting to INI file
+    WritePrivateProfileStringA("Settings", "DarkMode", bDarkMode ? "1" : "0", szIniPath);
+}
+
+// Load dark mode setting from INI file
+void LoadDarkModeSetting()
+{
+    char szIniPath[MAX_PATH] = { 0 };
+    char szDarkMode[16] = { 0 };
+
+    // Get the current module path
+    GetModuleFileNameA(NULL, szIniPath, MAX_PATH);
+
+    // Remove the executable filename to get the directory
+    char* pLastSlash = strrchr(szIniPath, '\\');
+    if (pLastSlash)
+    {
+        *(pLastSlash + 1) = '\0';
+    }
+
+    // Append INI filename
+    strncat(szIniPath, INI_FILENAME, MAX_PATH - strlen(szIniPath) - 1);
+
+    // Read dark mode setting from INI file (default is "0" - off)
+    GetPrivateProfileStringA("Settings", "DarkMode", "0", szDarkMode, sizeof(szDarkMode), szIniPath);
+
+    // Set global dark mode variable
+    g_bDarkMode = (szDarkMode[0] == '1');
+}
+
 // Start process watcher thread
 void StartProcessWatcher(HWND hDlg)
 {
@@ -1924,7 +2185,7 @@ void ApplyDarkMode(HWND hDlg, BOOL bEnable)
     const int buttonIds[] = {
         IDC_OK, IDC_LOAD_DLL, IDC_ABOUT, IDC_REFRESH,
         IDC_INJECT, IDC_USE_LAST, IDC_USE, IDC_EJECT,
-        IDC_WINDOW_BUTTON
+        IDC_WINDOW_BUTTON, IDC_SETTINGS_BUTTON
     };
 
     for (int i = 0; i < sizeof(buttonIds) / sizeof(buttonIds[0]); i++)
@@ -1955,4 +2216,82 @@ void ApplyDarkMode(HWND hDlg, BOOL bEnable)
 
     // Refresh process list to update colors
     ApplySearchFilter(hDlg);
+}
+
+// Settings dialog procedure
+INT_PTR CALLBACK SettingsDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    switch (message)
+    {
+    case WM_INITDIALOG:
+    {
+        // Set the dark mode checkbox state
+        CheckDlgButton(hDlg, IDC_SETTINGS_DARK_MODE, g_bDarkMode ? BST_CHECKED : BST_UNCHECKED);
+
+        // Apply dark mode if enabled
+        if (g_bDarkMode)
+        {
+            ApplyDarkMode(hDlg, TRUE);
+        }
+
+        return TRUE;
+    }
+
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLORDLG:
+    {
+        if (g_bDarkMode)
+        {
+            HDC hdcStatic = (HDC)wParam;
+            SetTextColor(hdcStatic, RGB(220, 220, 220));
+            SetBkColor(hdcStatic, RGB(30, 30, 30));
+            return (INT_PTR)g_hDarkBrush;
+        }
+        break;
+    }
+
+    case WM_COMMAND:
+    {
+        WORD wmId = LOWORD(wParam);
+        WORD wmEvent = HIWORD(wParam);
+
+        // Handle dark mode checkbox
+        if (wmId == IDC_SETTINGS_DARK_MODE && wmEvent == BN_CLICKED)
+        {
+            g_bDarkMode = (IsDlgButtonChecked(hDlg, IDC_SETTINGS_DARK_MODE) == BST_CHECKED);
+
+            // Save dark mode setting to INI file
+            SaveDarkModeSetting(g_bDarkMode);
+
+            // Apply dark mode to frame window title bar
+            if (g_hFrameDialog)
+            {
+                BOOL useDarkMode = g_bDarkMode;
+                DwmSetWindowAttribute(g_hFrameDialog, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
+
+                // Workaround: Briefly hide/show to update title bar without animation
+                ShowWindow(g_hFrameDialog, SW_HIDE);
+                SetWindowPos(g_hFrameDialog, NULL, 0, 0, 0, 0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+                ShowWindow(g_hFrameDialog, SW_SHOW);
+            }
+
+            // Force settings dialog redraw to update colors
+            RedrawWindow(hDlg, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+
+            return TRUE;
+        }
+
+        switch (wmId)
+        {
+        case IDC_SETTINGS_OK:
+        case IDCANCEL:
+            ShowMainView();
+            return TRUE;
+        }
+        break;
+    }
+    }
+
+    return FALSE;
 }
