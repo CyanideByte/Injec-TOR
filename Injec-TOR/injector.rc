@@ -30,7 +30,7 @@ CAPTION "InjecTOR v1.2"
 FONT 8, "Verdana", 0, 0, 0x1
 BEGIN
 CONTROL         IDB_BANNER, IDC_STATIC, "Static", SS_BITMAP, 8, 7, 237, 105
-CTEXT           "http://www.curse-x.com", IDC_STATIC, 8, 114, 80, 8, WS_DISABLED
+CTEXT           "https://www.curse-x.com", IDC_STATIC, 8, 114, 85, 8, WS_DISABLED
 END
 
 IDD_MAIN_DIALOG DIALOGEX 0, 0, 254, 171
