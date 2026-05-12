@@ -1159,15 +1159,5 @@ void ShowAboutDialog(HWND hDlg)
         "ScOOp, Gunout, Revoked, Borna, kemicza, ILA, etc.. etc\n\n"
         "Recreated and updated by CyanideByte";
 
-    const char* szHelp =
-        " 1.) Load a dll \n"
-        " 2.) Pick a process in the process list\n"
-        " 3.) Press inject dll.\n\n"
-        "Read the Read me for use of Process watcher plox";
-
-    char szFullAbout[1024] = { 0 };
-    _snprintf(szFullAbout, sizeof(szFullAbout) - 1, "%s\n\n%s", szAbout, szHelp);
-    szFullAbout[sizeof(szFullAbout) - 1] = '\0';
-
-    MessageBoxA(hDlg, szFullAbout, g_szMsgBoxTitle, MB_OK);
+    MessageBoxA(hDlg, szAbout, g_szMsgBoxTitle, MB_OK);
 }
